@@ -10,6 +10,7 @@ def connect() -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 def init_db() -> None:
@@ -75,6 +76,16 @@ def get_video(video_id: int) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
         return dict(row) if row else None
+
+def delete_video(video_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        conn.execute("DELETE FROM events WHERE video_id=?", (video_id,))
+        conn.execute("DELETE FROM videos WHERE id=?", (video_id,))
+        return result
 
 def search_events(video_id: int | None = None, label: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     clauses, params = [], []
