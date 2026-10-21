@@ -1,0 +1,4 @@
+-r requirements.txt
+# Ultralytics provides PyTorch and training/evaluation utilities.
+# For GPU builds, install the PyTorch wheel matching your CUDA runtime first:
+# https://pytorch.org/get-started/locally/
