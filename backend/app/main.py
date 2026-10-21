@@ -7,20 +7,18 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .database import get_video, init_db, list_videos, search_events
+from .database import delete_video, get_video, init_db, list_videos, search_events
 from .pipeline import process_video
 from .query import answer_question
 
 app = FastAPI(
-    title="Sentinel AI",
-    version="0.2.0",
-    description="Video intelligence prototype with object detection, tracking, and evidence-grounded event retrieval.",
+    title="Sentinel AI", version="0.3.0",
+    description="Video intelligence with object detection, tracking, event retrieval, and optional voice interaction in the browser.",
 )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_credentials=False, allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
 
@@ -43,7 +41,6 @@ async def upload_video(file: UploadFile = File(...)):
     suffix = Path(filename).suffix.lower()
     if suffix not in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
         raise HTTPException(400, "Unsupported format. Upload MP4, MOV, AVI, MKV, or WEBM.")
-
     destination = settings.upload_path / f"{uuid.uuid4().hex}{suffix}"
     max_bytes = settings.max_video_mb * 1024 * 1024
     size = 0
@@ -54,7 +51,6 @@ async def upload_video(file: UploadFile = File(...)):
                 if size > max_bytes:
                     raise HTTPException(413, f"File exceeds the {settings.max_video_mb} MB limit.")
                 out.write(chunk)
-        # Inference is synchronous and CPU/GPU-bound. Keep it off the async event loop.
         result = await run_in_threadpool(process_video, destination, filename)
         return {"status": "processed", **result}
     except HTTPException:
@@ -69,6 +65,15 @@ async def upload_video(file: UploadFile = File(...)):
     finally:
         await file.close()
 
+@app.delete("/api/videos/{video_id}", tags=["videos"])
+def remove_video(video_id: int):
+    record = delete_video(video_id)
+    if record is None:
+        raise HTTPException(404, "Video not found.")
+    stored_path = Path(record["stored_path"])
+    stored_path.unlink(missing_ok=True)
+    return {"deleted": True, "video_id": video_id}
+
 @app.get("/api/events", tags=["events"])
 def events(
     video_id: int | None = None,
@@ -78,6 +83,21 @@ def events(
     if video_id is not None and get_video(video_id) is None:
         raise HTTPException(404, "Video not found.")
     return {"items": search_events(video_id=video_id, label=label, limit=limit)}
+
+@app.get("/api/stats", tags=["analytics"])
+def stats():
+    videos_list = list_videos()
+    all_events = search_events(limit=500)
+    labels = {}
+    for event in all_events:
+        labels[event["label"]] = labels.get(event["label"], 0) + 1
+    return {
+        "video_count": len(videos_list),
+        "sampled_frames": sum(v["processed_frames"] for v in videos_list),
+        "event_count_returned": len(all_events),
+        "top_labels": sorted(labels.items(), key=lambda item: item[1], reverse=True)[:10],
+        "note": "Event count and label distribution summarize at most 500 earliest returned events.",
+    }
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
