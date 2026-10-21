@@ -35,5 +35,5 @@ def ask_agent(question, video_id=None):
             if not isinstance(args,dict): args={}
             result=run_tool(name,args,video_id)
             if name=="search_events": evidence.extend(result.get("events",[]))
-            messages.append({"role":"tool","tool_name":name,"content":json.dumps(result)})
+            messages.append({"role":"tool","content":json.dumps(result)})
     return {"answer":"The agent reached its tool-call limit. Please narrow the question.","evidence":evidence[:30],"agent_enabled":True,"model":settings.llm_model}
