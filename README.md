@@ -9,7 +9,10 @@ Sentinel AI is an end-to-end video analytics prototype built to demonstrate comp
 - **Tracking:** Ultralytics ByteTrack IDs where the tracker returns an ID.
 - **Event storage:** timestamp, frame number, label, confidence, tracking ID, and bounding box stored in SQLite.
 - **Event explorer:** filter events by video and class label.
-- **Evidence-grounded questions:** retrieve timestamped detections and summarize what the detector recorded. It does not claim that a missed detection proves an object was absent.
+- **Evidence-grounded questions:** deterministic retrieval with timestamped evidence.
+- **Generative AI agent:** optional local Ollama language model with allow-listed event-search and video-summary tools; the UI can switch back to deterministic retrieval.
+- **Model training:** reproducible YOLO fine-tuning and validation entrypoint that writes measured metrics to JSON.
+- **Voice AI:** optional local Whisper speech recognition and local text-to-speech endpoints, with browser voice fallbacks when available.
 - **Browser voice controls:** microphone input and spoken answers when supported by the browser; microphone permission is required.
 - **Video management:** delete a video and its event records.
 - **Engineering basics:** API validation, upload size limits, Docker configuration, tests, experiment template, and continuous integration.
@@ -31,7 +34,7 @@ FastAPI service ---- /api/ask ----> evidence-grounded retrieval
    +---- SQLite video metadata + timestamped events
 ```
 
-The question-answering feature is intentionally retrieval-based and deterministic. It is not an LLM agent and does not perform temporal action recognition. Browser speech is browser-provided speech recognition and speech synthesis, not a custom trained speech model.
+Sentinel offers two question modes: deterministic event retrieval (no language model required) and an optional tool-using local language-model agent. The agent can search stored detections and read video metadata; it cannot inspect raw footage or infer actions not represented by events. Local voice endpoints use faster-whisper and pyttsx3 when the optional dependencies are installed. Browser speech remains a fallback. Fine-tuning requires a labeled dataset; this repository does not include one or claim pretrained-model metrics as custom results.
 
 ## Requirements
 
@@ -128,6 +131,41 @@ flowchart TD
     HEALTH --> UI
 ```
 
+## Enable the local generative AI agent
+
+Install [Ollama](https://ollama.com/) and start its local service. In a terminal, pull a tool-capable model:
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+The backend defaults to `http://127.0.0.1:11434` and `qwen2.5:3b`. Configure a different local model with `SENTINEL_LLM_BASE_URL` and `SENTINEL_LLM_MODEL`. The dashboard's **Local LLM Agent** switch calls `POST /api/agent/ask`; turn it off to use the deterministic retrieval endpoint. If Ollama is not running, the API returns a setup hint and does not send video data to a hosted provider.
+
+The agent has an explicit, small tool allow-list for searching stored detections and reading video metadata. It does not execute arbitrary shell commands or have unrestricted computer access.
+
+## Enable local voice models
+
+```bash
+cd backend
+pip install -r requirements-voice.txt
+```
+
+Restart the API. The microphone button records audio and calls `POST /api/voice/transcribe` using faster-whisper on the CPU; answer playback tries `POST /api/voice/speak` using pyttsx3 and falls back to browser speech if local speech is unavailable. First use may download Whisper model weights. Microphone capture normally requires localhost or HTTPS and user permission. To use only browser speech, do not install the optional voice dependencies.
+
+Voice recognition model can be changed with `SENTINEL_VOICE_MODEL` (default `base`). Uploads are limited by `SENTINEL_MAX_AUDIO_MB` (default 25 MB).
+
+## Fine-tune the object detector
+
+Prepare a labeled dataset in the Ultralytics format described in [datasets/sentinel/README.md](datasets/sentinel/README.md). Dataset images and videos are intentionally not included in Git.
+
+```bash
+cd backend
+pip install -r requirements-ml.txt
+python train_yolo.py --data ../datasets/sentinel/data.yaml --model yolov8n.pt --epochs 50 --imgsz 640 --batch 8
+```
+
+For a compatible NVIDIA GPU, install the PyTorch build matching your CUDA setup and pass `--device 0`; otherwise use `--device cpu`. The script trains, validates, and writes `sentinel_metrics.json` plus plots to the run directory. These metrics are meaningful only for your dataset and validation split. To use the fine-tuned model in the video pipeline, set `SENTINEL_MODEL` to the resulting `best.pt` checkpoint path before starting the backend. Training has not been run as part of the repository commit because no labeled dataset was provided.
+
 ## API reference
 
 | Method | Endpoint | Purpose |
@@ -138,7 +176,10 @@ flowchart TD
 | DELETE | `/api/videos/{video_id}` | Delete a video and its event records |
 | GET | `/api/events?video_id=1&label=person` | Search timestamped detections |
 | GET | `/api/stats` | Basic counts and frequent labels |
-| POST | `/api/ask` | Ask a question about stored detection evidence |
+| POST | `/api/ask` | Deterministic question answering from stored detection evidence |
+| POST | `/api/agent/ask` | Optional Ollama agent with allow-listed retrieval tools |
+| POST | `/api/voice/transcribe` | Optional local speech-to-text; multipart field: `file` |
+| POST | `/api/voice/speak` | Optional local text-to-speech; JSON field: `text` |
 
 Example question request:
 
@@ -198,9 +239,9 @@ Suggested experiments:
 
 ## Known limitations and next steps
 
-- No trained temporal action-recognition model yet.
-- No custom automatic speech recognition or text-to-speech model; voice controls rely on browser capabilities.
-- Question answering is retrieval and summarization, not a large language model or autonomous agent.
+- No trained temporal action-recognition model yet; YOLO fine-tuning is provided but must be run on your own labeled dataset.
+- The local LLM agent and local voice endpoints require optional local services and dependencies; they are not automatically downloaded or started by the application.
+- No dataset, model accuracy claim, or inference benchmark is bundled; measure these on representative held-out footage.
 - No authentication, user accounts, rate limiting, persistent job queue, or production retention controls.
 - SQLite and the synchronous inference workflow are suitable for a local prototype, not multi-tenant scale.
 - Add representative dataset evaluation, annotated video playback, background jobs, authentication, deployment monitoring, and documented benchmark results before production use.
