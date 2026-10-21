@@ -1,0 +1,26 @@
+services:
+  api:
+    build: ./backend
+    ports: ["8000:8000"]
+    environment:
+      SENTINEL_MODEL: yolov8n.pt
+      SENTINEL_DB_PATH: /app/data/sentinel.db
+      SENTINEL_UPLOAD_DIR: /app/uploads
+      SENTINEL_SAMPLE_INTERVAL: 0.5
+    volumes:
+      - sentinel_data:/app/uploads
+      - sentinel_db:/app/data
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports: ["5173:5173"]
+    environment:
+      VITE_API_BASE: http://localhost:8000
+    depends_on: [api]
+volumes:
+  sentinel_data:
+  sentinel_db:
