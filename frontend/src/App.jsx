@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Activity, ArrowUpRight, Bot, CheckCircle2, Clock3, Database, FileVideo, Filter, Gauge, LoaderCircle, Mic, Search, ShieldCheck, UploadCloud, Video, Volume2, Trash2 } from 'lucide-react'
 
 const API = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
@@ -17,6 +17,10 @@ export default function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [apiOnline, setApiOnline] = useState(false)
+  const [useAgent, setUseAgent] = useState(true)
+  const [recording, setRecording] = useState(false)
+  const recorderRef = useRef(null)
+  const streamRef = useRef(null)
 
   async function loadVideos() {
     try {
@@ -56,27 +60,72 @@ export default function App() {
       setSelected(String(d.video_id))
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
-  function startVoiceInput() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SpeechRecognition) {
-      setError('Voice input is not supported in this browser. Try a recent version of Chrome or Edge.')
+  async function startVoiceInput() {
+    if (recording && recorderRef.current) {
+      recorderRef.current.stop()
+      setRecording(false)
       return
     }
-    const recognition = new SpeechRecognition()
-    recognition.lang = 'en-IN'
-    recognition.interimResults = false
-    recognition.maxAlternatives = 1
-    recognition.onresult = event => setQuestion(event.results[0][0].transcript)
-    recognition.onerror = () => setError('Voice input failed. Check microphone permission and try again.')
-    recognition.start()
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setError('Audio recording is not supported in this browser. Use the browser voice fallback below or a recent Chrome or Edge.')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+      const recorder = new MediaRecorder(stream)
+      recorderRef.current = recorder
+      const chunks = []
+      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data) }
+      recorder.onerror = () => { setError('Recording failed. Check microphone permission.'); setRecording(false) }
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop())
+        streamRef.current = null
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        if (!blob.size) return
+        setBusy(true); setError('')
+        try {
+          const data = new FormData()
+          data.append('file', blob, 'recording.webm')
+          const response = await fetch(API + '/api/voice/transcribe', { method: 'POST', body: data })
+          const result = await response.json()
+          if (!response.ok) throw new Error(result.detail || 'Local speech recognition unavailable. Install backend/requirements-voice.txt.')
+          setQuestion(result.text || '')
+          setNotice('Transcribed audio with ' + result.model + (result.language ? ' (' + result.language + ')' : '') + '.')
+        } catch (e) {
+          // Browser speech recognition is a fallback when the optional local Whisper package is absent.
+          const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
+          if (Recognition) {
+            const recognition = new Recognition()
+            recognition.lang = 'en-IN'; recognition.interimResults = false
+            recognition.onresult = event => setQuestion(event.results[0][0].transcript)
+            recognition.onerror = () => setError(e.message)
+            recognition.start()
+          } else setError(e.message)
+        } finally { setBusy(false) }
+      }
+      recorder.start()
+      setRecording(true)
+      setNotice('Recording. Press the microphone button again to transcribe.')
+    } catch (e) { setError('Microphone permission was denied or unavailable: ' + e.message) }
   }
-  function speakAnswer() {
-    if (!answer?.answer || !('speechSynthesis' in window)) {
-      setError('Speech output is not supported in this browser.')
-      return
+  async function speakAnswer() {
+    if (!answer?.answer) return
+    try {
+      const response = await fetch(API + '/api/voice/speak', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: answer.answer })
+      })
+      if (!response.ok) throw new Error('Local speech synthesis is not installed.')
+      const audio = new Audio(URL.createObjectURL(await response.blob()))
+      audio.onended = () => URL.revokeObjectURL(audio.src)
+      await audio.play()
+    } catch {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel()
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(answer.answer))
+      } else setError('Speech output is not supported in this browser.')
     }
-    window.speechSynthesis.cancel()
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(answer.answer))
   }
   async function removeVideo(video) {
     if (!window.confirm('Delete ' + video.filename + ' and its stored detections?')) return
@@ -94,7 +143,7 @@ export default function App() {
     if (!question.trim()) return
     setBusy(true); setError(''); setAnswer(null)
     try {
-      const r = await fetch(API + '/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, video_id: selected ? Number(selected) : null }) })
+      const r = await fetch(API + (useAgent ? '/api/agent/ask' : '/api/ask'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, video_id: selected ? Number(selected) : null }) })
       const d = await r.json()
       if (!r.ok) throw new Error(d.detail || 'Question failed')
       setAnswer(d)
@@ -131,10 +180,10 @@ export default function App() {
         </div>
         <div className="panel agent-panel" id="agent">
           <div className="panel-heading"><div><div className="section-kicker">NATURAL LANGUAGE</div><h2>Ask Sentinel</h2></div><span className="icon-chip purple"><Bot size={19}/></span></div>
-          <p className="muted">Ask about objects detected in your footage. Answers are grounded in stored detections, not generated scene guesses.</p>
-          <div className="question-box"><Search size={18}/><input value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && ask()} placeholder="e.g. When was a person detected?"/><button className="voice-btn" onClick={startVoiceInput} title="Ask by voice" aria-label="Ask by voice"><Mic size={16}/></button><button onClick={ask} disabled={busy || !question.trim()} aria-label="Ask"><ArrowUpRight size={18}/></button></div>
+          <p className="muted">Ask about objects in your footage. Agent mode uses a local language model and event tools; turn it off for deterministic retrieval.</p><div className="mode-switch"><span>LOCAL LLM AGENT</span><button className={useAgent ? "mode-toggle enabled" : "mode-toggle"} onClick={() => setUseAgent(v => !v)}>{useAgent ? "Enabled" : "Retrieval only"}</button></div>
+          <div className="question-box"><Search size={18}/><input value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && ask()} placeholder="e.g. When was a person detected?"/><button className={recording ? "voice-btn recording" : "voice-btn"} onClick={startVoiceInput} title={recording ? "Stop recording and transcribe" : "Record a voice question"} aria-label="Record voice question"><Mic size={16}/></button><button onClick={ask} disabled={busy || !question.trim()} aria-label="Ask"><ArrowUpRight size={18}/></button></div>
           <div className="suggestions"><span>TRY:</span>{['person', 'car', 'dog'].map(q => <button key={q} onClick={() => setQuestion('When was ' + q + ' detected?')}>{q}</button>)}</div>
-          {answer && <div className="answer-card"><div className="answer-label"><CheckCircle2 size={15}/> EVIDENCE-BASED RESPONSE <button className="speak-btn" onClick={speakAnswer} title="Read answer aloud"><Volume2 size={14}/></button></div><p>{answer.answer}</p><small>{answer.method}</small>{answer.evidence?.length > 0 && <div className="evidence-list">{answer.evidence.slice(0,4).map(e => <div key={e.event_id}><span>{e.label}</span><strong>{time(e.timestamp_seconds)}</strong><small>{Math.round(e.confidence*100)}% confidence</small></div>)}</div>}</div>}
+          {answer && <div className="answer-card"><div className="answer-label"><CheckCircle2 size={15}/> EVIDENCE-BASED RESPONSE <button className="speak-btn" onClick={speakAnswer} title="Read answer aloud"><Volume2 size={14}/></button></div><p>{answer.answer}</p><small>{answer.method || (answer.agent_enabled ? "Local language model agent" : "Deterministic retrieval")}{answer.model ? " · " + answer.model : ""}{answer.agent_enabled === false && useAgent ? " · Start Ollama for agent mode" : ""}</small>{answer.evidence?.length > 0 && <div className="evidence-list">{answer.evidence.slice(0,4).map(e => <div key={e.event_id}><span>{e.label}</span><strong>{time(e.timestamp_seconds)}</strong><small>{Math.round(e.confidence*100)}% confidence</small></div>)}</div>}</div>}
         </div>
       </section>
       <section className="panel event-panel" id="events">
