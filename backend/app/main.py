@@ -1,12 +1,14 @@
 from pathlib import Path
 import uuid
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from .config import settings
+from .agent import ask_agent
+from .voice import transcribe_audio, synthesize_speech
 from .database import delete_video, get_video, init_db, list_videos, search_events
 from .pipeline import process_video
 from .query import answer_question
@@ -108,3 +110,39 @@ def ask(body: AskRequest):
     if body.video_id is not None and get_video(body.video_id) is None:
         raise HTTPException(404, "Video not found.")
     return answer_question(body.question, body.video_id)
+
+
+@app.post("/api/agent/ask", tags=["agent"])
+def agent_ask(body: AskRequest):
+    if body.video_id is not None and get_video(body.video_id) is None:
+        raise HTTPException(404, "Video not found.")
+    return ask_agent(body.question, body.video_id)
+
+@app.post("/api/voice/transcribe", tags=["voice"])
+async def voice_transcribe(file: UploadFile = File(...)):
+    max_bytes = settings.max_audio_mb * 1024 * 1024
+    audio = await file.read(max_bytes + 1)
+    await file.close()
+    if not audio:
+        raise HTTPException(400, "Audio file is empty.")
+    if len(audio) > max_bytes:
+        raise HTTPException(413, f"Audio exceeds the {settings.max_audio_mb} MB limit.")
+    try:
+        return await run_in_threadpool(transcribe_audio, audio, file.filename or "recording.webm", settings.voice_model)
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(400, f"Transcription failed: {type(exc).__name__}") from exc
+
+class SpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1500)
+
+@app.post("/api/voice/speak", tags=["voice"])
+async def voice_speak(body: SpeakRequest):
+    try:
+        audio = await run_in_threadpool(synthesize_speech, body.text)
+        return Response(content=audio, media_type="audio/wav")
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"Speech synthesis failed: {type(exc).__name__}") from exc
