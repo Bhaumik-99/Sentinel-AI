@@ -96,6 +96,38 @@ docker compose up --build
 
 Then open [http://localhost:5173](http://localhost:5173). Docker Compose stores uploaded videos and the SQLite database in named volumes. The default Compose setup uses CPU inference unless the container is explicitly configured for GPU access.
 
+## System architecture
+
+```mermaid
+flowchart TD
+    U[User] --> UI[React + Vite Dashboard]
+    UI -->|Upload video / REST requests| API[FastAPI Backend]
+
+    subgraph Processing[Video processing pipeline]
+        API --> UP[Validate and store upload]
+        UP --> CV[OpenCV frame sampling]
+        CV --> DET[YOLO object detection]
+        DET --> TRACK[ByteTrack object tracking]
+        TRACK --> EVT[Timestamped detection events]
+    end
+
+    EVT --> DB[(SQLite database)]
+    API -->|List and filter| DB
+
+    UI -->|Question about footage| ASK[Evidence-grounded query service]
+    ASK --> DB
+    DB -->|Matching detections and timestamps| ASK
+    ASK -->|Answer with evidence| UI
+
+    UI -->|Microphone input| SPEECH[Browser speech recognition]
+    SPEECH -->|Transcribed question| ASK
+    ASK -->|Text answer| TTS[Browser speech synthesis]
+    TTS -->|Spoken answer| U
+
+    API --> HEALTH[Health and statistics endpoints]
+    HEALTH --> UI
+```
+
 ## API reference
 
 | Method | Endpoint | Purpose |
