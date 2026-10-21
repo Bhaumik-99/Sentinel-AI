@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Activity, ArrowUpRight, Bot, CheckCircle2, Clock3, Database, FileVideo, Filter, Gauge, LoaderCircle, Search, ShieldCheck, UploadCloud, Video } from 'lucide-react'
+import { Activity, ArrowUpRight, Bot, CheckCircle2, Clock3, Database, FileVideo, Filter, Gauge, LoaderCircle, Mic, Search, ShieldCheck, UploadCloud, Video, Volume2, Trash2 } from 'lucide-react'
 
 const API = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 const fmt = n => Number(n || 0).toLocaleString()
@@ -56,6 +56,40 @@ export default function App() {
       setSelected(String(d.video_id))
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
+  function startVoiceInput() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      setError('Voice input is not supported in this browser. Try a recent version of Chrome or Edge.')
+      return
+    }
+    const recognition = new SpeechRecognition()
+    recognition.lang = 'en-IN'
+    recognition.interimResults = false
+    recognition.maxAlternatives = 1
+    recognition.onresult = event => setQuestion(event.results[0][0].transcript)
+    recognition.onerror = () => setError('Voice input failed. Check microphone permission and try again.')
+    recognition.start()
+  }
+  function speakAnswer() {
+    if (!answer?.answer || !('speechSynthesis' in window)) {
+      setError('Speech output is not supported in this browser.')
+      return
+    }
+    window.speechSynthesis.cancel()
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(answer.answer))
+  }
+  async function removeVideo(video) {
+    if (!window.confirm('Delete ' + video.filename + ' and its stored detections?')) return
+    setError('')
+    try {
+      const r = await fetch(API + '/api/videos/' + video.id, { method: 'DELETE' })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.detail || 'Could not delete video')
+      if (String(video.id) === selected) setSelected('')
+      await loadVideos()
+      setNotice('Deleted ' + video.filename + ' and its event records.')
+    } catch (e) { setError(e.message) }
+  }
   async function ask() {
     if (!question.trim()) return
     setBusy(true); setError(''); setAnswer(null)
@@ -98,9 +132,9 @@ export default function App() {
         <div className="panel agent-panel" id="agent">
           <div className="panel-heading"><div><div className="section-kicker">NATURAL LANGUAGE</div><h2>Ask Sentinel</h2></div><span className="icon-chip purple"><Bot size={19}/></span></div>
           <p className="muted">Ask about objects detected in your footage. Answers are grounded in stored detections, not generated scene guesses.</p>
-          <div className="question-box"><Search size={18}/><input value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && ask()} placeholder="e.g. When was a person detected?"/><button onClick={ask} disabled={busy || !question.trim()} aria-label="Ask"><ArrowUpRight size={18}/></button></div>
+          <div className="question-box"><Search size={18}/><input value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && ask()} placeholder="e.g. When was a person detected?"/><button className="voice-btn" onClick={startVoiceInput} title="Ask by voice" aria-label="Ask by voice"><Mic size={16}/></button><button onClick={ask} disabled={busy || !question.trim()} aria-label="Ask"><ArrowUpRight size={18}/></button></div>
           <div className="suggestions"><span>TRY:</span>{['person', 'car', 'dog'].map(q => <button key={q} onClick={() => setQuestion('When was ' + q + ' detected?')}>{q}</button>)}</div>
-          {answer && <div className="answer-card"><div className="answer-label"><CheckCircle2 size={15}/> EVIDENCE-BASED RESPONSE</div><p>{answer.answer}</p><small>{answer.method}</small>{answer.evidence?.length > 0 && <div className="evidence-list">{answer.evidence.slice(0,4).map(e => <div key={e.event_id}><span>{e.label}</span><strong>{time(e.timestamp_seconds)}</strong><small>{Math.round(e.confidence*100)}% confidence</small></div>)}</div>}</div>}
+          {answer && <div className="answer-card"><div className="answer-label"><CheckCircle2 size={15}/> EVIDENCE-BASED RESPONSE <button className="speak-btn" onClick={speakAnswer} title="Read answer aloud"><Volume2 size={14}/></button></div><p>{answer.answer}</p><small>{answer.method}</small>{answer.evidence?.length > 0 && <div className="evidence-list">{answer.evidence.slice(0,4).map(e => <div key={e.event_id}><span>{e.label}</span><strong>{time(e.timestamp_seconds)}</strong><small>{Math.round(e.confidence*100)}% confidence</small></div>)}</div>}</div>}
         </div>
       </section>
       <section className="panel event-panel" id="events">
