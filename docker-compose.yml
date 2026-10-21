@@ -2,11 +2,15 @@ services:
   api:
     build: ./backend
     ports: ["8000:8000"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SENTINEL_MODEL: yolov8n.pt
       SENTINEL_DB_PATH: /app/data/sentinel.db
       SENTINEL_UPLOAD_DIR: /app/uploads
       SENTINEL_SAMPLE_INTERVAL: 0.5
+      SENTINEL_LLM_BASE_URL: http://host.docker.internal:11434
+      SENTINEL_LLM_MODEL: qwen2.5:3b
     volumes:
       - sentinel_data:/app/uploads
       - sentinel_db:/app/data
